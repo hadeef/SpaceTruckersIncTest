@@ -124,4 +124,114 @@ public class RouteService : EntityService<Route, RouteDto, IRouteRepository>, IR
             return response;
         }
     }
+
+    public override async Task<ServiceResponse<RouteDto>> UpdateAndSaveAsync(RouteDto dto, string logMessageTemplate, params object[] logArgs)
+    {
+        ServiceResponse<RouteDto> response = new();
+        try
+        {
+            if (dto is null)
+            {
+                response.Errors.Add("Request body is required.");
+                response.StatusCode = ServiceResponseStatus.BadRequest.Value;
+                return response;
+            }
+
+            if (dto.Id == Guid.Empty)
+            {
+                response.Errors.Add("Id is required for update operations.");
+                response.StatusCode = ServiceResponseStatus.BadRequest.Value;
+                return response;
+            }
+
+            Route? existing = await _repository.GetByIdAsync(dto.Id);
+            if (existing is null)
+            {
+                response.Errors.Add("Entity not found.");
+                response.StatusCode = ServiceResponseStatus.NotFound.Value;
+                return response;
+            }
+
+            ApplyRouteDtoToEntity(dto, existing);
+
+            Route saved = await UpdateEntityAndSaveAsync(existing, logMessageTemplate, logArgs);
+
+            _logger.LogInformation(logMessageTemplate, logArgs);
+            response.Data = _mapper.Map<RouteDto>(saved);
+            response.StatusCode = ServiceResponseStatus.Success.Value;
+            return response;
+        }
+        catch (ConcurrencyConflictException ex)
+        {
+            _logger.LogWarning(ex, "Concurrency conflict while updating route {RouteId}.", dto?.Id);
+            ServiceResponse<RouteDto> conflictResponse = new();
+            conflictResponse.Errors.Add("Concurrency conflict occurred while updating the entity.");
+            conflictResponse.StatusCode = ServiceResponseStatus.Conflict.Value;
+            return conflictResponse;
+        }
+        catch (ArgumentException ex)
+        {
+            _logger.LogWarning(ex, "Invalid input when updating route {RouteId}.", dto?.Id);
+            response.Errors.Add("Invalid route data provided.");
+            response.StatusCode = ServiceResponseStatus.BadRequest.Value;
+            return response;
+        }
+        catch (DomainException ex)
+        {
+            _logger.LogWarning(ex, "Domain validation failed when updating route {RouteId}.", dto?.Id);
+            response.Errors.Add("Route update failed validation rules.");
+            response.StatusCode = ServiceResponseStatus.BadRequest.Value;
+            return response;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "UpdateAndSaveAsync failed for Route id {RouteId}.", dto?.Id);
+            const string friendlyErroMessage = "An unexpected error occurred while updating the route.";
+            response.Errors.Add(friendlyErroMessage);
+            response.Message = friendlyErroMessage;
+            response.StatusCode = ServiceResponseStatus.InternalServerError.Value;
+            return response;
+        }
+    }
+
+    private void ApplyRouteDtoToEntity(RouteDto src, Route dest)
+    {
+        try
+        {
+            if (src.EstimatedDuration.TotalSeconds >= 0 && src.EstimatedDuration != dest.EstimatedDuration)
+            {
+                dest.UpdateEstimatedDuration(src.EstimatedDuration);
+            }
+        }
+        catch
+        {
+            _logger.LogWarning("Failed to update EstimatedDuration for Route {RouteId}.", dest.Id);
+        }
+
+        try
+        {
+            List<string> existingCheckpoints = dest.Checkpoints.ToList();
+            IReadOnlyList<string> incomingCheckpoints = src.Checkpoints ?? Array.Empty<string>();
+
+            foreach (string cp in incomingCheckpoints)
+            {
+                if (!existingCheckpoints.Contains(cp, StringComparer.Ordinal))
+                {
+                    dest.AddCheckpoint(cp);
+                }
+            }
+
+            foreach (string cp in existingCheckpoints)
+            {
+                if (!incomingCheckpoints.Contains(cp, StringComparer.Ordinal))
+                {
+                    _ = dest.RemoveCheckpoint(cp);
+                }
+            }
+        }
+        catch
+        {
+            _logger.LogWarning("Failed to update Checkpoints for Route {RouteId}.", dest.Id);
+        }
+    }
 }

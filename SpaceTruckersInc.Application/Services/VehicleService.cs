@@ -145,4 +145,136 @@ public class VehicleService : EntityService<Vehicle, VehicleDto, IVehicleReposit
             return response;
         }
     }
+
+    public override async Task<ServiceResponse<VehicleDto>> UpdateAndSaveAsync(VehicleDto dto, string logMessageTemplate
+        , params object[] logArgs)
+    {
+        ServiceResponse<VehicleDto> response = new();
+        try
+        {
+            if (dto is null)
+            {
+                response.Errors.Add("Request body is required.");
+                response.StatusCode = ServiceResponseStatus.BadRequest.Value;
+                return response;
+            }
+
+            if (dto.Id == Guid.Empty)
+            {
+                response.Errors.Add("Id is required for update operations.");
+                response.StatusCode = ServiceResponseStatus.BadRequest.Value;
+                return response;
+            }
+
+            Vehicle? existingVehicle = await _repository.GetByIdAsync(dto.Id);
+            if (existingVehicle is null)
+            {
+                response.Errors.Add("Entity not found.");
+                response.StatusCode = ServiceResponseStatus.NotFound.Value;
+                return response;
+            }
+
+            ApplyVehicleDtoToEntity(dto, existingVehicle);
+
+            Vehicle saved = await UpdateEntityAndSaveAsync(existingVehicle, logMessageTemplate, logArgs);
+
+            _logger.LogInformation(logMessageTemplate, logArgs);
+            response.Data = _mapper.Map<VehicleDto>(saved);
+            response.StatusCode = ServiceResponseStatus.Success.Value;
+            return response;
+        }
+        catch (ConcurrencyConflictException ex)
+        {
+            _logger.LogWarning(ex, "Concurrency conflict while updating vehicle {VehicleId}.", dto?.Id);
+            ServiceResponse<VehicleDto> conflictResponse = new();
+            conflictResponse.Errors.Add("Concurrency conflict occurred while updating the entity.");
+            conflictResponse.StatusCode = ServiceResponseStatus.Conflict.Value;
+            return conflictResponse;
+        }
+        catch (ArgumentException ex)
+        {
+            _logger.LogWarning(ex, "Invalid input when updating vehicle {VehicleId}.", dto?.Id);
+            response.Errors.Add("Invalid vehicle data provided.");
+            response.StatusCode = ServiceResponseStatus.BadRequest.Value;
+            return response;
+        }
+        catch (DomainException ex)
+        {
+            _logger.LogWarning(ex, "Domain validation failed when updating vehicle {VehicleId}.", dto?.Id);
+            response.Errors.Add("Vehicle update failed validation rules.");
+            response.StatusCode = ServiceResponseStatus.BadRequest.Value;
+            return response;
+        }
+        catch (Exception ex)
+        {
+            _logger.LogError(ex, "UpdateAndSaveAsync failed for Vehicle id {VehicleId}.", dto?.Id);
+            const string friendlyErroMessage = "An unexpected error occurred while updating the vehicle.";
+            response.Errors.Add(friendlyErroMessage);
+            response.Message = friendlyErroMessage;
+            response.StatusCode = ServiceResponseStatus.InternalServerError.Value;
+            return response;
+        }
+    }
+
+    private void ApplyVehicleDtoToEntity(VehicleDto src, Vehicle dest)
+    {
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(src.Condition))
+            {
+                VehicleCondition condition = VehicleCondition.FromName(src.Condition, false);
+                if (condition == VehicleCondition.Damaged && dest.Condition != VehicleCondition.Damaged)
+                {
+                    dest.MarkDamaged(); // sets Maintenance status
+                }
+                else if (condition == VehicleCondition.Functional && dest.Condition != VehicleCondition.Functional)
+                {
+                    dest.Repair(); // sets Available status
+                }
+            }
+        }
+        catch
+        {
+            _logger.LogWarning("Failed to apply Condition from VehicleDto to Vehicle entity for VehicleId {VehicleId}.", dest.Id);
+        }
+
+        // Apply status with guard: damaged must not be available
+        try
+        {
+            if (!string.IsNullOrWhiteSpace(src.Status))
+            {
+                VehicleStatus status = VehicleStatus.FromName(src.Status, false);
+
+                if (status == VehicleStatus.OnTrip && dest.Status != VehicleStatus.OnTrip)
+                {
+                    dest.AssignToTrip();
+                }
+                else if (status == VehicleStatus.Available && dest.Condition != VehicleCondition.Damaged && dest.Status != VehicleStatus.Available)
+                {
+                    dest.ReleaseFromTrip();
+                }
+                else if (status == VehicleStatus.Maintenance && dest.Status != VehicleStatus.Maintenance)
+                {
+                    // Keep condition + status aligned to maintenance
+                    if (dest.Condition != VehicleCondition.Damaged)
+                    {
+                        dest.MarkDamaged(); // sets Maintenance
+                    }
+                    else
+                    {
+                        dest.MarkDamaged(); // already damaged; keeps Maintenance
+                    }
+                }
+                else if (status == VehicleStatus.Available && dest.Condition == VehicleCondition.Damaged)
+                {
+                    // Requested Available but condition is Damaged: enforce maintenance
+                    dest.MarkDamaged();
+                }
+            }
+        }
+        catch
+        {
+            _logger.LogWarning("Failed to apply Status from VehicleDto to Vehicle entity for VehicleId {VehicleId}.", dest.Id);
+        }
+    }
 }
