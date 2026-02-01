@@ -1,0 +1,7 @@
+<Solution>
+  <Project Path="SpaceTruckersInc.Application/SpaceTruckersInc.Application.csproj" />
+  <Project Path="SpaceTruckersInc.Domain/SpaceTruckersInc.Domain.csproj" />
+  <Project Path="SpaceTruckersInc.Infrastructure/SpaceTruckersInc.Infrastructure.csproj" />
+  <Project Path="SpaceTruckersInc.UnitTest/SpaceTruckersInc.UnitTest.csproj" />
+  <Project Path="SpaceTruckersInc/SpaceTruckersInc.csproj" />
+</Solution>
